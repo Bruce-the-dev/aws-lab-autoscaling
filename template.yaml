@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Auto Scaling Web Tier with ALB - Module 3 Lab 1
+
+# ============================================================
+# RESOURCES
+# ============================================================
+Resources:
+
+  # ----------------------------------------------------------
+  # VPC - Our isolated network in the cloud
+  # CIDR 10.0.0.0/16 gives us ~65,000 IP addresses to work with
+  # ----------------------------------------------------------
+  LabVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true        # Allows DNS resolution within VPC
+      EnableDnsHostnames: true      # Gives instances DNS names (needed for ALB)
+      Tags:
+        - Key: Name
+          Value: Lab-AutoScaling-VPC
+
+  # ----------------------------------------------------------
+  # PUBLIC SUBNETS (2 across different AZs)
+  # These will host the ALB and NAT Gateway
+  # MapPublicIpOnLaunch=true means anything launched here gets a public IP
+  # ----------------------------------------------------------
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref LabVPC
+      CidrBlock: 10.0.1.0/24                    # 10.0.1.0 - 10.0.1.255
+      AvailabilityZone: !Select [0, !GetAZs ''] # First AZ in the region (eu-west-1a)
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Lab-PublicSubnet-1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref LabVPC
+      CidrBlock: 10.0.2.0/24                    # 10.0.2.0 - 10.0.2.255
+      AvailabilityZone: !Select [1, !GetAZs ''] # Second AZ (eu-west-1b)
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Lab-PublicSubnet-2
+
+  # ----------------------------------------------------------
+  # PRIVATE SUBNETS (2 across different AZs)
+  # These will host the EC2 instances - no direct internet access
+  # ----------------------------------------------------------
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref LabVPC
+      CidrBlock: 10.0.11.0/24                   # 10.0.11.0 - 10.0.11.255
+      AvailabilityZone: !Select [0, !GetAZs ''] # Same AZ as PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: Lab-PrivateSubnet-1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref LabVPC
+      CidrBlock: 10.0.12.0/24                   # 10.0.12.0 - 10.0.12.255
+      AvailabilityZone: !Select [1, !GetAZs ''] # Same AZ as PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: Lab-PrivateSubnet-2
+
+  # ----------------------------------------------------------
+  # INTERNET GATEWAY
+  # The door to the public internet for our VPC
+  # ----------------------------------------------------------
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Lab-IGW
+
+  # Attach the IGW to our VPC (a separate step in CloudFormation)
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref LabVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # ----------------------------------------------------------
+  # PUBLIC ROUTE TABLE
+  # Defines: "anything in here can reach the internet via IGW"
+  # ----------------------------------------------------------
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref LabVPC
+      Tags:
+        - Key: Name
+          Value: Lab-PublicRouteTable
+
+  # The actual route: "0.0.0.0/0 (anywhere) → IGW"
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # Associate the public subnets with the public route table
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
