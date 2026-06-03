@@ -225,3 +225,76 @@ Resources:
       Tags:
         - Key: Name
           Value: Lab-EC2-SG
+# ============================================================
+  # SECTION 3 - ALB + TARGET GROUP + LISTENER
+  # ============================================================
+
+  # ----------------------------------------------------------
+  # APPLICATION LOAD BALANCER
+  # Internet-facing, lives in BOTH public subnets for HA
+  # ----------------------------------------------------------
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: Lab-ALB
+      Scheme: internet-facing                    # vs 'internal' for private ALBs
+      Type: application                          # ALB (vs NLB or GLB)
+      IpAddressType: ipv4
+      Subnets:                                   # ALB needs at least 2 subnets in different AZs
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref ALBSecurityGroup                  # The SG we built in Section 2
+      Tags:
+        - Key: Name
+          Value: Lab-ALB
+
+  # ----------------------------------------------------------
+  # TARGET GROUP
+  # The pool that EC2 instances will register into
+  # ASG will automatically add/remove instances from here
+  # ----------------------------------------------------------
+  WebServerTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: Lab-WebServer-TG
+      VpcId: !Ref LabVPC
+      Protocol: HTTP                             # How the ALB talks to instances
+      Port: 80
+      TargetType: instance                       # Targets are EC2 instances (vs IPs, Lambdas)
+
+      # ----- Health Check Configuration -----
+      # ALB will ping each instance to check if it's alive
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: '80'
+      HealthCheckPath: /                         # The URL to hit for health checks
+      HealthCheckIntervalSeconds: 30             # Check every 30s
+      HealthCheckTimeoutSeconds: 5               # Wait max 5s for a response
+      HealthyThresholdCount: 2                   # 2 successes = healthy
+      UnhealthyThresholdCount: 3                 # 3 failures = unhealthy, remove from rotation
+      Matcher:
+        HttpCode: '200'                          # Expect HTTP 200 OK as healthy response
+
+      # ----- Deregistration -----
+      # When ASG removes an instance, how long to wait before killing connections
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'                            # Quick draining for the lab
+
+      Tags:
+        - Key: Name
+          Value: Lab-WebServer-TG
+
+  # ----------------------------------------------------------
+  # LISTENER
+  # Tells the ALB: "listen on port 80, forward to the target group"
+  # ----------------------------------------------------------
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: forward                          # Forward all traffic to the target group
+          TargetGroupArn: !Ref WebServerTargetGroup
