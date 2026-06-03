@@ -298,3 +298,150 @@ Resources:
       DefaultActions:
         - Type: forward                          # Forward all traffic to the target group
           TargetGroupArn: !Ref WebServerTargetGroup
+# ============================================================
+  # SECTION 4 - LAUNCH TEMPLATE + ASG + SCALING POLICY
+  # ============================================================
+
+  # ----------------------------------------------------------
+  # LAUNCH TEMPLATE
+  # The blueprint for every EC2 the ASG will launch:
+  #   - Amazon Linux 2023 AMI (latest)
+  #   - t2.micro (free tier eligible)
+  #   - Security group from Section 2
+  #   - User data: installs Apache + creates instance-specific page
+  # ----------------------------------------------------------
+  WebServerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: Lab-WebServer-LaunchTemplate
+      LaunchTemplateData:
+        # Latest Amazon Linux 2023 AMI for eu-west-1 (Ireland)
+        # In a real project, you'd use an SSM parameter to always grab the latest
+        ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+        InstanceType: t2.micro
+        SecurityGroupIds:
+          - !Ref EC2SecurityGroup
+        # NO KeyName property — per lab requirement, no SSH access
+        Monitoring:
+          Enabled: true                 # Enables detailed CloudWatch metrics
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: Lab-WebServer
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            # Update the system and install required packages
+            dnf update -y
+            dnf install -y httpd stress
+
+            # Start Apache and enable it on boot
+            systemctl start httpd
+            systemctl enable httpd
+
+            # Get this instance's metadata using IMDSv2 (the secure way)
+            TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+              -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+            INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+              http://169.254.169.254/latest/meta-data/instance-id)
+            PRIVATE_IP=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+              http://169.254.169.254/latest/meta-data/local-ipv4)
+            AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+              http://169.254.169.254/latest/meta-data/placement/availability-zone)
+
+            # Create an instance-specific HTML page
+            cat <<EOF > /var/www/html/index.html
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <title>Auto Scaling Lab</title>
+              <style>
+                body { font-family: Arial; text-align: center; padding: 50px;
+                       background: #232f3e; color: white; }
+                h1 { color: #ff9900; }
+                .info { background: #37475a; padding: 20px; border-radius: 10px;
+                        display: inline-block; margin-top: 20px; }
+                .label { color: #ff9900; font-weight: bold; }
+              </style>
+            </head>
+            <body>
+              <h1>🚀 Auto Scaling Lab - Module 3</h1>
+              <div class="info">
+                <p><span class="label">Instance ID:</span> $INSTANCE_ID</p>
+                <p><span class="label">Private IP:</span> $PRIVATE_IP</p>
+                <p><span class="label">Availability Zone:</span> $AZ</p>
+              </div>
+              <p>Refresh the page to see different instances responding!</p>
+            </body>
+            </html>
+            EOF
+
+            # Endpoint to trigger CPU stress for the scaling demo
+            # Hitting /stress will spin all CPUs at 100% for 5 minutes
+            cat <<'EOF' > /var/www/html/stress.sh
+            #!/bin/bash
+            stress --cpu $(nproc) --timeout 300 &
+            echo "CPU stress started for 5 minutes"
+            EOF
+            chmod +x /var/www/html/stress.sh
+
+  # ----------------------------------------------------------
+  # AUTO SCALING GROUP
+  # - Lives in PRIVATE subnets (security requirement)
+  # - Registers instances with our target group
+  # - Min 1, Desired 1, Max 4 (per lab requirements)
+  # ----------------------------------------------------------
+  WebServerAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: Lab-WebServer-ASG
+      VPCZoneIdentifier:                    # Which subnets to launch into
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WebServerLaunchTemplate
+        Version: !GetAtt WebServerLaunchTemplate.LatestVersionNumber
+      MinSize: '1'
+      DesiredCapacity: '1'
+      MaxSize: '4'
+      TargetGroupARNs:                      # KEY: auto-register with ALB target group
+        - !Ref WebServerTargetGroup
+      HealthCheckType: ELB                  # Use ALB health checks (not just EC2 status)
+      HealthCheckGracePeriod: 120           # Give instances 2 min to boot before checking
+      Tags:
+        - Key: Name
+          Value: Lab-WebServer-ASG-Instance
+          PropagateAtLaunch: true           # Apply this tag to launched instances too
+
+  # ----------------------------------------------------------
+  # SCALING POLICY - Target Tracking
+  # "Keep average CPU at 30% across the fleet"
+  # If CPU goes above 30%, ASG adds instances automatically
+  # If CPU drops below, ASG removes instances (scale-in for extra credit!)
+  # ----------------------------------------------------------
+  CPUScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref WebServerAutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 30.0                   # Per lab requirements
+
+# ============================================================
+# OUTPUTS - Useful values shown after stack creation
+# ============================================================
+Outputs:
+  ALBEndpoint:
+    Description: Public URL of the Application Load Balancer
+    Value: !Sub 'http://${ApplicationLoadBalancer.DNSName}'
+
+  VPCId:
+    Description: ID of the VPC
+    Value: !Ref LabVPC
+
+  ASGName:
+    Description: Name of the Auto Scaling Group
+    Value: !Ref WebServerAutoScalingGroup
