@@ -122,3 +122,106 @@ Resources:
     Properties:
       SubnetId: !Ref PublicSubnet2
       RouteTableId: !Ref PublicRouteTable
+# ============================================================
+  # SECTION 2 - NAT GATEWAY + PRIVATE ROUTING + SECURITY GROUPS
+  # ============================================================
+
+  # ----------------------------------------------------------
+  # ELASTIC IP for the NAT Gateway
+  # NAT Gateways need a fixed public IP to function
+  # ----------------------------------------------------------
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment   # IGW must exist first
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: Lab-NatGW-EIP
+
+  # ----------------------------------------------------------
+  # NAT GATEWAY
+  # Lives in a public subnet, gives private subnets outbound internet
+  # We use ONE NAT GW (regional) to save cost — for true HA you'd
+  # have one per AZ, but this lab specifies "Regional NAT Gateway"
+  # ----------------------------------------------------------
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId  # Attach the EIP
+      SubnetId: !Ref PublicSubnet1                       # Lives in public subnet
+      Tags:
+        - Key: Name
+          Value: Lab-NatGateway
+
+  # ----------------------------------------------------------
+  # PRIVATE ROUTE TABLE
+  # Defines: "private subnets reach internet via NAT GW"
+  # ----------------------------------------------------------
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref LabVPC
+      Tags:
+        - Key: Name
+          Value: Lab-PrivateRouteTable
+
+  # The route: "anywhere (0.0.0.0/0) → NAT Gateway"
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  # Associate private subnets with the private route table
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  # ----------------------------------------------------------
+  # SECURITY GROUP - ALB
+  # Allows HTTP traffic (port 80) from anywhere on the internet
+  # ----------------------------------------------------------
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP traffic to the ALB from the internet
+      VpcId: !Ref LabVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0                # Anyone on the internet
+          Description: Allow HTTP from anywhere
+      Tags:
+        - Key: Name
+          Value: Lab-ALB-SG
+
+  # ----------------------------------------------------------
+  # SECURITY GROUP - EC2 Instances
+  # Allows HTTP only from the ALB Security Group (NOT the public internet)
+  # No SSH access at all (per lab requirements)
+  # ----------------------------------------------------------
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP only from the ALB
+      VpcId: !Ref LabVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup   # KEY: only from ALB SG
+          Description: Allow HTTP from ALB only
+      Tags:
+        - Key: Name
+          Value: Lab-EC2-SG
