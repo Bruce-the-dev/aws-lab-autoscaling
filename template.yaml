@@ -319,6 +319,8 @@ Resources:
         # In a real project, you'd use an SSM parameter to always grab the latest
         ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
         InstanceType: t2.micro
+        IamInstanceProfile:
+          Arn: !GetAtt EC2InstanceProfile.Arn     # Attach the SSM role for management
         SecurityGroupIds:
           - !Ref EC2SecurityGroup
         # NO KeyName property — per lab requirement, no SSH access
@@ -429,7 +431,33 @@ Resources:
         PredefinedMetricSpecification:
           PredefinedMetricType: ASGAverageCPUUtilization
         TargetValue: 30.0                   # Per lab requirements
+# ============================================================
+  # SSM Access for EC2s (so we can shell in to trigger stress)
+  # ============================================================
 
+  # IAM Role that allows EC2s to be managed by SSM
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: Lab-EC2-SSM-Role
+
+  # Instance profile (a wrapper IAM uses to attach roles to EC2s)
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2InstanceRole
 # ============================================================
 # OUTPUTS - Useful values shown after stack creation
 # ============================================================
