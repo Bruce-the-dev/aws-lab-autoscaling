@@ -1,0 +1,8 @@
+template-file-path: template.yaml
+
+parameters: {}     # Our template has no parameters defined
+
+tags:
+  Project: AutoScalingLab
+  Module: Module3
+  ManagedBy: GitSync
